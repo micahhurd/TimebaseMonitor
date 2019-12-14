@@ -3,9 +3,222 @@ programName = "Timebase Monitor Program"
 # By Micah Hurd
 version = 1
 
-exec(open("C:\\Users\\Micah\\PycharmProjects\\Libraries\\ReadTxtFile.py").read())
-exec(open("C:\\Users\\Micah\\PycharmProjects\\Libraries\\userPrompt.py").read())
+# exec(open("C:\\Users\\Micah\\PycharmProjects\\Libraries\\ReadTxtFile.py").read())
+def readTxtFile(filename, searchTag, index, sFunc=""):
+    # Example Useage:
+    # emailList = readTxtFile(templateFile, "emails", "1:", sFunc="list")
+    # Returns values as a list
 
+    indexing = False
+    searchTag = searchTag.lower()
+    # print("Search Tag: ",searchTag)
+
+    # Open the file
+    with open(filename, "r") as filestream:
+        # Loop through each line in the file
+        for line in filestream:
+            # Split each line into separated elements based upon comma delimiter
+            currentLine = line.split(",")
+            # select the first comma seperated value
+            search = str(currentLine[0])
+            # Set the value to all lowercase for comparison
+            search = search.lower()
+
+            # Remove the newline symbol from the list, if present
+            lineLength = len(currentLine)
+            lastElement = lineLength - 1
+            if currentLine[lastElement] == "\n":
+                currentLine.remove("\n")
+            lineLength = len(currentLine)
+            lastElement = lineLength - 1
+
+            # Output the line which matches the search
+            # If index is populated then output the indexed field
+            if search == searchTag:
+                if index == "":
+                    output = currentLine
+                    # break
+                    # return currentLine
+
+                if type(index) is int:
+                    if index > lineLength:
+                        output = "Index out of range"
+                        # break
+                    else:
+                        output = currentLine[index]
+                        # break
+                        # return currentLine[index]
+
+                if type(index) is str and index.find(":"):
+                    indexing = True
+                    index = index.split(":")
+                    index[0] = int(index[0])
+
+                    if index[0] > lineLength:
+                        output = "Index out of range"
+                        # break
+                        # return "Index out of range"
+
+                    if index[1] != "" and index[1] != " ":
+                        index[1] = int(index[1])
+                        if index[1] > lineLength:
+                            output = "Index out of range"
+                            # break
+                            # return "Index out of range"
+
+                    if index[1] == "" or index[1] == " ":
+                        index[1] = lastElement
+
+                    parsedLine = []
+                    while index[0] <= index[1]:
+                        x = currentLine[index[0]]
+                        parsedLine.append(x)
+                        index[0] += 1
+                    output = parsedLine
+                    # break
+                    # return parsedLine.
+
+                # Apply string manipulation functions, if requested (optional argument)
+                if sFunc != "":
+                    sFunc = sFunc.lower()
+
+                    if sFunc == "strip" and indexing == False:
+                        output = output.strip()
+
+                if (type(output) is list) and sFunc != "list":
+                    output2 = ""
+                    for i in output:
+                        output2 += str(i) + ","
+                    length = len(output2)
+                    output2 = output2[0:(length - 1)]
+                    output = ""
+                    output = output2
+
+                if (type(output) is str) and sFunc == "list":
+                    output = output.split(",")
+
+                return output
+
+        return "Searched term could not be found"
+
+    filestream.close()
+    return "Searched term could not be found"
+
+
+# exec(open("C:\\Users\\Micah\\PycharmProjects\\Libraries\\userPrompt.py").read())
+def userPrompt(message,inType="",range=""):
+    # requires import os
+    # Example usage:
+    # evalMethod = userPrompt("Please enter an option.","num","1:4:whole")
+    # userPrompt("Set the step attenuator to {} dB".format(nominal),"")
+
+    def stringInput(prompt):
+        a = False
+        b = False
+        while a == False:
+            string = input(" > " + str(prompt) + " ")
+            while b == False:
+                check = input(" > Please verify that \"{}\" is correct. Enter (y)es or (n)o: ".format(string))
+                # print("entered: ",check)
+                check = check.lower()
+                # print("lowered: ", check)
+                if check != "y" and check != "n":
+                    print("!! You must enter \"y\" for Yes or \"n\" for No !!")
+                elif check == "y" or check == "n":
+                    b = True
+            if check == "y":
+                a = True
+            else:
+                b = False
+        string = string.strip()
+        return string
+
+    def yesNoPrompt(prompt):
+        b = False
+        while b == False:
+            check = input(" > "+ str(prompt) + " - Enter (y)es or (n)o: ")
+            # print("entered: ",check)
+            check = check.lower()
+            # print("lowered: ", check)
+            if check != "y" and check != "n":
+                print("!! You must enter \"y\" for Yes or \"n\" for No !!")
+            elif check == "y" or check == "n":
+                b = True
+        if check == "y":
+            return True
+        else:
+            return False
+
+    def checkFileExists(prompt):
+        string = input(" > " + str(prompt) + " ")
+        b = os.path.isfile(string)
+        while b == False:
+            string = input(" > File \"{}\" does not exist. Please re-enter: ".format(string))
+            b = os.path.isfile(string)
+
+        string = string.strip()
+        return string
+
+    def numberInput(prompt,range=""):
+        if range != "":
+            range = str(range)
+            range = range.split(":")
+            numType = str(range[2])
+            if numType == "whole":
+                lower = int(range[0])
+                upper = int(range[1])
+            else:
+                lower = float(range[0])
+                upper = float(range[1])
+
+            number = lower - 1
+            while (number < lower) or (number > upper):
+                number = input(
+                    " > " + prompt + " (" + str(lower) + " through " + str(upper) + "): ")
+                try:
+                    if numType == "float":
+                        number = float(number)
+                    elif numType == "whole":
+                        number = int(number)
+                except:
+                    print("No valid number entered! Please try again...")
+                    number = lower - 1
+                else:
+                    if numType == "float" and type(number) is float:
+                        if number < lower or number > upper:
+                            print("Allowed values are " + float(lower) + " through " + float(upper) + ". Please try again.")
+                        else:
+                            return number
+                    elif numType == "whole" and type(number) is int:
+                        if number < lower or number > upper:
+                            print("Allowed values are " + str(lower) + " through " + str(upper) + ". Please try again.")
+                        else:
+                            return number
+        else:
+            while 1:
+                number = input(" > " + prompt + " (numeric entry): ")
+                try:
+                    number = float(number)
+                except:
+                    print("No valid number entered! Please try again...")
+                else:
+                    return number
+
+
+    if inType != "":
+        inType = inType.lower()
+
+    if inType == "":
+        input(" > " + str(message) + " ")
+        return 0
+    elif inType == "yn":
+        return yesNoPrompt(message)
+    elif inType == "string":
+        return stringInput(message)
+    elif inType == "file":
+        return checkFileExists(message)
+    elif inType == "num":
+        return numberInput(message,range)
 
 import serial
 import platform
@@ -355,7 +568,6 @@ def loadOffsetValues(filename,indexTime):
     print("")
     print("***************************************************************************************************")
     return offsetList
-
 
 # In windows testing this will be different than in linux testing
 # Place this here so that this can be easily change when moved to a linux environment
@@ -795,11 +1007,6 @@ while monitor == True:
 
 # Place TIE value and Timestamp into log file
 # Setup program to pull the last TIE value and calculate an offset off that, if it was less than a day ago
-# Setup the program to run multiple intervals (figure out how to designate what the interval is)
 # Run full self-test only once per month
-
-
-
-
 
 

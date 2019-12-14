@@ -1,14 +1,53 @@
-instr = "56,1,0,153,0,0;56,1,0,153,0,0;56,1,0,153,0,0;5,1,2,34,B_3_1_1,0;5,1,2,34,C_9841,0;"
+import time
+import datetime
 
-results = []
-index = instr.find('C_')
-while index >= 0:
-    length = instr[index:].find(',')
-    assert length > 0
-    results.append(instr[index+2:index+length])
-    instr = instr[index+length:]
-    index = instr.find('C_')
+# time1 = datetime.now()
 
 
-length = instr[4].find(',')
-print(length)
+
+def loadOffsetValues(filename,indexTime):
+    # Time values being compared should be UTC value in seconds
+    # Examples: indexTime = time.time()
+
+
+
+    filestream = open(filename, 'r')  # Open specified uncertainty file
+    filestreamLines = filestream.readlines()  # Create a list of all lines from the uncertainty file
+    filestream.close()
+    print(filestreamLines)
+
+    # # Remove any blank lines from the list of file lines
+    # j = 0
+    # for i in filestreamLines:                           # Enumerate through each line in the line list
+    #     if i == "\n":                                   # If line only contains newline character
+    #         del filestreamLines[j]                      # then delete the line
+    #     j += 1
+
+
+    offsetList = []
+    for i in filestreamLines:                           # Enumerate through each line in the line list
+        currentLine = i.split(",")                      # Split out the currently enumerated line according to CSV
+        print(currentLine)
+        lineTimestamp = float(currentLine[1])           # Get the column that should contain the UTC value
+
+        aTime = lineTimestamp
+        bTime = indexTime
+        deltaSeconds = (bTime - aTime)                  # Find the difference between the index'd value and the file value
+        print(deltaSeconds)
+
+        if deltaSeconds <= 86400:                       # if the difference is less than or equal to 24 hours
+            currentOffsetVal = str(currentLine[4])      # Get column that should contain the offset value
+            try:
+                offsetList.append(float(currentOffsetVal))
+            except:
+                print("\"{}\" was not a number".format(currentOffsetVal))
+
+
+    return offsetList
+
+time2 = time.time()
+
+listVals = loadOffsetValues("C:\\Users\\Micah\\Downloads\\1245620-2.csv",time2)
+
+print(listVals)
+print(len(listVals))
