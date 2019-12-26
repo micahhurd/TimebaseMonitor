@@ -15,6 +15,7 @@ import os
 import datetime
 import csv
 from os import system, name
+from os import path
 import time
 # import pyvisa as visa
 # from win32com import client
@@ -25,10 +26,12 @@ from pathlib import Path
 import shutil
 
 def create_log(logFile):
+    checkExists = path.exists(logFile)
 
-    f= open(logFile,"w+")
+    if checkExists == False:
+        f= open(logFile,"w+")
+        f.close()
 
-    f.close()
     return 0
 
 def writeLog(entry,logFile):
@@ -162,7 +165,7 @@ def serialIO(cmd,dType="",timeout=1):
         # exit()
     elif output == 'buffer?':
         quantity = ser.inWaiting()
-        print("Quantity waiting in buffer: " + str(quantity))
+        # print("Quantity waiting in buffer: " + str(quantity))
     else:
         # The magic thing to get this to work was to add "\r" before and after the command...
         output = "\r" + output + "\r"
@@ -173,7 +176,7 @@ def serialIO(cmd,dType="",timeout=1):
             for i in range(timeout):
                 time.sleep(1)
                 quantity = ser.inWaiting()
-                print("Quantity waiting in buffer: " + str(quantity))
+                # print("Quantity waiting in buffer: " + str(quantity))
                 if quantity > 0:
                     break
 
@@ -351,11 +354,38 @@ def loadOffsetValues(filename,indexTime):
                 offsetList.append(float(currentOffsetVal))
             except:
                 print("Offset value \"{}\" was not a number".format(currentOffsetVal))
-
+    print("offsetList: {}".format(offsetList))
     print("")
     print("***************************************************************************************************")
     return offsetList
 
+def cullLogFile(filename,maxLines):
+    fileLines = []
+    with open(filename, "r") as filestream:
+        # print(len(filestream))
+
+        lineCount = 0
+        for indx, line in enumerate(filestream):
+            fileLines.append(line)
+            lineCount = indx
+
+        print(lineCount)
+
+    if lineCount > maxLines:
+        qtyToDelete = lineCount - maxLines
+    else:
+        return 0
+
+
+    f = open(filename, "w+")
+    f.close()
+
+    with open(filename, "a") as result_file:
+        for indx, line in enumerate(fileLines):
+            if indx >= qtyToDelete:
+                result_file.writelines(line)
+
+    return 1
 
 # In windows testing this will be different than in linux testing
 # Place this here so that this can be easily change when moved to a linux environment
@@ -396,10 +426,16 @@ tieValue1 = 0
 tieTimeStamp1 = 0
 deviceList = []
 freqOffsetList = []
+duplicateTieList = []
 pastTieValList = []
 pastTimeValList = []
+ErrorList = []
 templateFile = cwd + fileSlash + templateFile
 freqOffset24HR = ""
+deltaTimeLastSelftest = 0
+deltaTimeLastDailyMail = 0
+timeLastErrorEmail = 0
+commRetryInterval = 5
 # tieValue24HR1 = 0
 # tieTimeStamp24HR1 = 0
 
@@ -407,7 +443,7 @@ freqOffset24HR = ""
 # Start Program ------------------------------------------------------
 create_log(logFile)
 
-writeLog("New Program Instance -------------------------------",logFile)
+writeLog("\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/ New Program Instance \/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/",logFile)
 writeLog("Program Name: " + str(programName),logFile)
 writeLog("Program Version: " + str(version),logFile)
 writeLog("Current Working Directory: "+str(cwd),logFile)
@@ -436,6 +472,7 @@ while searchComplete == False:
         device = tbDevice.split(",")
         deviceList.append(device)
         freqOffsetList.append([])
+        duplicateTieList.append([])
         pastTieValList.append(0)
         pastTimeValList.append(0)
     i += 1
@@ -457,8 +494,10 @@ for i in deviceList:
         listFromFile = loadOffsetValues(outputFile, indexTime)
         writeLog("Found the following historical offset values: {}".format(str(listFromFile)), logFile)
         try:
-            freqOffsetList[deviceCounter].append(listFromFile)
+            for i in listFromFile:
+                freqOffsetList[deviceCounter].append(i)
             writeLog("Saved historical offset values successfully", logFile)
+            writeLog("freqOffsetList: {}".format(freqOffsetList), logFile)
             print("Saved historical offset values successfully")
         except:
             print("Failed to load historical offset values!")
@@ -495,7 +534,7 @@ while monitor == True:
         writeLog("currentDevice: {}".format(str(currentDevice)), logFile)
         print("Device Parameters:")
         print(currentDevice)
-        assetNum = currentDevice[0]
+        assetNum = str(currentDevice[0])
         writeLog("assetNum: {}".format(str(assetNum)), logFile)
         resourceStr = currentDevice[1]
         writeLog("resourceStr: {}".format(str(resourceStr)), logFile)
@@ -507,13 +546,19 @@ while monitor == True:
         writeLog("diffLimit: {}".format(str(diffLimit)), logFile)
         emailList = readTxtFile(templateFile, "emails", "1:", sFunc="list")
         writeLog("emailList: {}".format(str(emailList)), logFile)
-        monitoringInterval = int(readTxtFile(templateFile, "monitoringInterval", 1))
+        monitoringInterval = float(readTxtFile(templateFile, "monitoringInterval", 1))
+        commErrorTimeout = float(readTxtFile(templateFile, "commErrorTimeout", 1))
+        commRetryCnt = commErrorTimeout / commRetryInterval
+        commRetryCnt = round(commRetryCnt)
+        commRetryCnt = int(commRetryCnt)
 
         # Variables to keep track of the hour and minutes; for making sure events happen at midnight -------
         currentTime = currentDT.strftime("%H:%M:%S")
         currentTime = currentTime.split(":")
         timeHour = int(currentTime[0])
         timeMinute = int(currentTime[1])
+        tbError = False
+        tbErrorType = 999
 
         # Create the output directory name and log output file for the monitored device --------------------
         outputDir = str(readTxtFile(templateFile, "logDirectory", 1, sFunc="strip"))
@@ -535,7 +580,7 @@ while monitor == True:
         # Determine if it is midnight, and if it is the first monitoring interval of the hour
         # If these are both true then the program should run self-test and send
         # the daily status e-mail ---------------------------------------------------------------------------
-        if timeHour == 0 and timeMinute < monitoringInterval:
+        if timeHour == 0:
             isMidnight = True
         else:
             isMidnight = False
@@ -543,8 +588,16 @@ while monitor == True:
         # Set Send Daily E-mail and self-test Flag ----------------------------------------------------------
         if isMidnight == True:
             writeLog("isMidnight = True", logFile)
-            dailyEmail = True
-            performSelfTest = True
+            tempCurrentTime = time.time()
+            temporaryFloatValue = abs(tempCurrentTime - deltaTimeLastSelftest)
+            if temporaryFloatValue > 3600:
+                performSelfTest = True
+                deltaTimeLastSelftest = time.time()
+                dailyEmail = True
+                deltaTimeLastDailyMail = time.time()
+                writeLog("Set flags to run self-test and send daily e-mail notification", logFile)
+                writeLog("Performing operation to cull the length of the log file", logFile)
+                cullLogFile(logFile, 200_000)
         else:
             writeLog("isMidnight = False", logFile)
             dailyEmail = False
@@ -562,6 +615,25 @@ while monitor == True:
         if debug == False:
             serialCmd = "*IDN?"
             devIDN = serialIO(serialCmd, dType="string", timeout=10)
+
+            tbError = False
+            if devIDN == "":
+                for i in range(commRetryCnt):
+                    print("Communication Retry {}".format(i + 1))
+                    time.sleep(commRetryInterval)
+                    serialCmd = "*IDN?"
+                    devIDN = serialIO(serialCmd, dType="string", timeout=10)
+                    if devIDN != "":
+                        break
+
+                if devIDN == "":
+                    tbError = True
+                    ErrorList.append(assetNum)
+                    tbErrorType = 0
+                else:
+                    tbError = False
+
+
         else:
             devIDN = "manf,model,SN,version"
         devIDN = devIDN.replace(",", "_")
@@ -616,19 +688,81 @@ while monitor == True:
             else:
                 selfTestStringRegister.append("unk.")
 
+        # Confirm that the GPS is still locked:
+        string = True
+        tempCounter = 0
+        while string == True:
+            status = serialIO("SYNC:STAT?", "string", timeout=10)
+            status = status.strip()
+            if status != "":
+                print("GPS Receiver Status: {}".format(status))
+                string = False
+            else:
+                tempCounter += 1
+                string = True
+            if tempCounter >= 10:
+                string = False
+        writeLog("GPS Receiver Status: {}".format(status), logFile)
+
+        if status != "LOCK" and status != "POW" and status != "":
+            tbError = True
+            ErrorList.append(assetNum)
+            tbErrorType = 2
+
+        if status == "POW":
+            deviceMeasHold = True
+        else:
+            deviceMeasHold = False
+        # print("deviceMeasHold: {}".format(deviceMeasHold))
+
+
+        # Get the Frequency Figure of Merit
+        string = True
+        tempCounter = 0
+        while string == True:
+            FFOM = serialIO("SYNC:FFOM?", "string", timeout=10)
+            if status != "":
+                if FFOM == "1":
+                    description = "Frequency output is locked to GPS"
+                elif FFOM == "2":
+                    description = "Frequency output is in hold-over mode and of good quality"
+                elif FFOM == "3":
+                    description = "Frequency output is poor, possibly due to startup, or other"
+                else:
+                    description = "Unknown status"
+                print("Frequency Figure of Merit: {} ({})".format(FFOM,description))
+                string = False
+            else:
+                tempCounter += 1
+                string = True
+            if tempCounter >= 10:
+                string = False
+        writeLog("FFOM: {}".format(FFOM), logFile)
+
         # Fetch the current TIE value and timestamp ---------------------------------------------------------
         if debug == False:
-            string = True
-            while string == True:
-                try:
-                    tieValue2 = serialIO("FETC?", "string", timeout=10)
-                    tieTimeStamp2 = time.time()
-                    print("TIE Value Received from Timebase: {}".format(tieValue2))
-                    tieValue2 = float(tieValue2)
-                    string = False
-                except:
-                    print("Could not convert {} to float".format(tieValue2))
-                    string = True
+            tempList = []
+            for i in range(1):
+                string = True
+                tempCounter = 0
+                while string == True:
+                    try:
+                        tieValue2 = serialIO("FETC?", "string", timeout=10)
+                        print("Current Time Interval Error Reported by Timebase: {}".format(tieValue2))
+                        tieValue2 = float(tieValue2)
+                        tempList.append(tieValue2)
+                        string = False
+                    except:
+                        tempCounter += 1
+                        print("Could not convert {} to float".format(tieValue2))
+                        string = True
+                        if tempCounter >= 10:
+                            string = False
+                            tempList.append(0)
+            tieTimeStamp2 = time.time()
+            tieValue2 = statistics.mean(tempList)
+            # print("Averaged TIE Value: {}".format(tieValue2))
+
         else:
             tieValue2 = 3E-7
             tieTimeStamp2 = time.time()
@@ -641,7 +775,9 @@ while monitor == True:
         writeLog("pastTieValList: {}".format(pastTieValList), logFile)
         tieValue1 = pastTieValList[deviceCounter]
         tieTimeStamp1 = pastTimeValList[deviceCounter]
-        intervalPer24Hr = int(24 * 60 / monitoringInterval)
+        intervalPer24Hr = float(24 * 60 / monitoringInterval)
+        intervalPer24Hr = round(intervalPer24Hr)
+        writeLog("Quantity of time base averages per 24 hours (monitoring interval of {} minuteds): {}".format(monitoringInterval,intervalPer24Hr), logFile)
         if tieValue1 == 0:
             # No TIE1 value to calculate against, so the results of the calculation is null
             freqOffset = "null"
@@ -649,14 +785,42 @@ while monitor == True:
             pastTieValList[deviceCounter] = tieValue2
             pastTimeValList[deviceCounter] = tieTimeStamp2
         else:
+            # Code to check for duplicate TIE values and note them as such if so
+            # Receiving duplicate TIE values indicates that the timebase is unlocked from the GPS
+            if tieValue2 == tieValue1:
+                duplicateTieList[deviceCounter].append(tieValue2)
+            else:
+                # If Tie values are not duplicate then remove one
+                tempLength = len(duplicateTieList[deviceCounter])
+                if tempLength > 0:
+                    duplicateTieList[deviceCounter].pop(0)
+
+
+
+            tempLength = len(duplicateTieList[deviceCounter])
+            if tempLength > 10:
+                ErrorList.append(assetNum)
+                tbError = True
+                tbErrorType = 1
+                # Allow no more than 15 entries
+                while tempLength > 15:
+                    duplicateTieList[deviceCounter].pop(0)
+                    tempLength = len(duplicateTieList[deviceCounter])
+
             # Perfrom the frequency offset calculation, which takes the form:
             # Freq Offset = (TIE2 - TIE1)/(TIME2 - TIME1)
             freqOffset = (tieValue2 - tieValue1) / (tieTimeStamp2 - tieTimeStamp1)
-            freqOffsetList[deviceCounter].append(freqOffset)
-            length = len(freqOffsetList[deviceCounter])
-            while length > intervalPer24Hr:
-                freqOffsetList[deviceCounter].pop(0)
+            # print("tbError: {}".format(tbError))
+            if tbError == False and deviceMeasHold == False:
+                freqOffsetList[deviceCounter].append(freqOffset)
                 length = len(freqOffsetList[deviceCounter])
+                # print("Performed Freq Offset Archival")
+                while length > intervalPer24Hr:
+                    freqOffsetList[deviceCounter].pop(0)
+                    length = len(freqOffsetList[deviceCounter])
+            else:
+                print("Withheld Freq Offset Archival")
+
 
             # Place the new most recent TIE value and time into the associated value lists
             # the TIE and Time 2 values should go into the past register because, for the next
@@ -664,12 +828,24 @@ while monitor == True:
             pastTieValList[deviceCounter] = tieValue2
             pastTimeValList[deviceCounter] = tieTimeStamp2
         writeLog("freqOffset: {}".format(str(freqOffset)), logFile)
+        tempLength = len(duplicateTieList[deviceCounter])
+        writeLog("Qty Duplicate TIE Vals for AN{}: {}".format(assetNum,tempLength), logFile)
 
 
-        # Calculate 24 Hr Freq. Diff ------------------------------------------------------------------------
+        # Calculate 24 Hr Avg. Freq. Diff --------------------------------------------------------------------
         length = len(freqOffsetList[deviceCounter])
-        if length >= intervalPer24Hr:
-            freqOffset24HR = statistics.mean(freqOffsetList[deviceCounter])
+        writeLog("freqOffsetList: {}".format(freqOffsetList), logFile)
+        writeLog("length: {}".format(length), logFile)
+        if length >= intervalPer24Hr or length >= 2:
+            writeLog("==== Performing 24 Hour Average Calculation ====", logFile)
+            writeLog("freqOffsetList: {}".format(freqOffsetList),logFile)
+            writeLog("freqOffsetList for device {} is: {}".format(deviceCounter,freqOffsetList[deviceCounter]), logFile)
+            list24hrVals = []
+            for i in freqOffsetList[deviceCounter]:
+                list24hrVals.append(i)
+
+            freqOffset24HR = statistics.mean(list24hrVals)
+            print("Current 24 Hour Mean Deviation: {}".format(freqOffset24HR))
             writeLog("freqOffset24HR: {}".format(str(freqOffset24HR)), logFile)
         else:
             freqOffset24HR = "null"
@@ -684,8 +860,8 @@ while monitor == True:
         else:
             diffLimitMet = False
 
-        length = len(freqOffsetList[deviceCounter])
-        if (length >= intervalPer24Hr) and (freqOffset24HR != "") and (diffLimitMet != True):
+
+        if (freqOffset24HR != "null") and (diffLimitMet != True):
             if abs(freqOffset24HR) > diffLimit:
                 diffLimitMet = True
         writeLog("diffLimitMet: {}".format(str(diffLimitMet)), logFile)
@@ -699,11 +875,49 @@ while monitor == True:
         toFile[3] = freqOffset24HR
         toFile[4] = selfTestResults
 
-        writeLogCSV(toFile, outputFile)
-        writeLog("Wrote to instrument monitoring log: {}".format(str(toFile)), logFile)
-        writeLog("Instrument monitoring log at: {}".format(str(outputFile)), logFile)
+        # Logic to keep the program from writing when the timebase device is not working properly
+        if tbError == False and deviceMeasHold == False:
+            writeLogCSV(toFile, outputFile)
+            writeLog("Wrote to instrument monitoring log: {}".format(str(toFile)), logFile)
+            writeLog("Instrument monitoring log at: {}".format(str(outputFile)), logFile)
+        else:
+            writeLog("Withheld writing values to monitoring log because error flag is true.", logFile)
+
+        tempCurrentTime = time.time()
+        deltaLastErrorEmail = tempCurrentTime - timeLastErrorEmail
 
         # Send E-mail If Flagged To Do So ----------------------------------------------------------------
+        tempCheckInList = assetNum in ErrorList
+        if (tbError == True) and (deltaLastErrorEmail > 3600) and (tempCheckInList == True):
+            if tbErrorType == 0:
+                errorMsg = "During routine monitoring the TBM program could not communicate with one or more devices.\n\n"
+            elif tbErrorType == 1:
+                errorMsg = "During routine monitoring the TBM program observed more than 10 consecutive instances of"
+                errorMsg += " the same TIE value. This indicates that the device is not locked to a satellite.\n\n"
+            elif tbErrorType == 2:
+                errorMsg = "During routine monitoring the TBM program found a device with an unlocked GPS receiver. "
+                errorMsg += "The instrument SYNC:STAT is reported as \"{}\".\n\n".format(status)
+            else:
+                errorMsg = "During routine monitoring the TBM program found a device which experienced an unknown error.\n\n"
+
+            subjectStr = "AN {} GPS Timebase Warning Message".format(assetNum)
+            msgStr = ""
+            msgStr += errorMsg
+            msgStr += "Device Asset Number(s): {}\n\n".format(ErrorList)
+            msgStr += "Please check the listed device(s).\n\n".format(diffLimit)
+            msgStr += "{}, Version {}\n".format(programName, version)
+
+            test = sendEmail(emailList, subjectStr, msgStr, smtpUrl, smtpPort, smtpEmail, smtpPassword)
+
+            print("Error Type {}".format(tbErrorType))
+            print("Warning Email sent? (0 = yes): {}".format(test))
+            # Remove the device from the error list
+            list(filter(lambda a: a != assetNum, ErrorList))
+            timeLastErrorEmail = time.time()
+            tbErrorType = 999
+
+
+
 
         if diffLimitMet == True or debug == True:
             subjectStr = "AN {} GPS Timebase Warning Message".format(assetNum)
@@ -752,6 +966,7 @@ while monitor == True:
     # write the program total run time to the program log
     upTime = timeDeltaSecondsUTC(timeProgramStarted)
     upTime = upTime / 60 / 60 / 24
+    upTime = round(upTime)
     writeLog("Program up time: {} days".format(str(upTime)), logFile)
 
     # Place status into log file to indicate that the program is still running ---
@@ -760,6 +975,7 @@ while monitor == True:
     print("")
     print("")
     print("")
+    print("Program Uptime: {} Days".format(upTime))
     print("============")
 
     userInterfaceHeader(programName, version, cwd, logFile, msg="Waiting for next monitoring event...")
@@ -768,7 +984,7 @@ while monitor == True:
         input("...")
 
     # Determine the time to the next 20 minute interval and wait that long
-    secondsWait = int(waitTime(monitoringInterval))
+    secondsWait = float(waitTime(monitoringInterval))
     # print("secondsWait: {}".format(secondsWait))
     writeLog("Seconds to next monitoring event: {}".format(str(secondsWait)), logFile)
     writeLog("Minutes to next monitoring event: {}".format(str(secondsWait/60)), logFile)
@@ -778,12 +994,16 @@ while monitor == True:
         seconds = secondsWait - (wholeMinutes * 60)
         if seconds < 10:
             seconds = "0" + str(seconds)
+            seconds = seconds.replace(".0", "")
+        else:
+            seconds = str(seconds)
+            seconds = seconds.replace(".0", "")
         if wholeMinutes < 10:
-            wholeMinutes = " " + str(wholeMinutes)
+            wholeMinutes = "0" + str(wholeMinutes)
         if debug == True:
             print("Minutes Remaining: {}:{}".format(wholeMinutes,seconds))
         else:
-            print("Minutes Remaining: {}:{}\r".format(wholeMinutes,seconds), end="")
+            print("Minutes Remaining: {}:{}    \r".format(wholeMinutes,seconds), end="")
         secondsWait -= 1
         time.sleep(1)
     print()
@@ -792,7 +1012,7 @@ while monitor == True:
 
 
 
-
+# Divide by zero error on the 24 hour interval error average; check that the correct values are being stored
 # Place TIE value and Timestamp into log file
 # Setup program to pull the last TIE value and calculate an offset off that, if it was less than a day ago
 # Setup the program to run multiple intervals (figure out how to designate what the interval is)
