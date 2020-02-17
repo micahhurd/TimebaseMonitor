@@ -280,14 +280,16 @@ def sendEmail(recipeintList,subjectStr,msgStr,smtpURLstr,smtpPortInt,smtpFromStr
     msg = MIMEMultipart()
 
     if type(recipeintList) is list:
+        print("List address detected")
         addressList = ""
-        for i in recipeintList:
+        for index, i in enumerate(recipeintList):
             address = str(i).strip()
-            addressList += str(address) + "; "
+            # addressList += str(address) + "; "
+            recipeintList[index] = address
 
-        # Chop the trailing ; off the end of the string
-        length = len(addressList)
-        addressList = addressList[0:(length - 2)]
+        # # Chop the trailing ; off the end of the string
+        # length = len(addressList)
+        # addressList = addressList[0:(length - 2)]
     else:
         addressList = recipeintList
 
@@ -301,11 +303,12 @@ def sendEmail(recipeintList,subjectStr,msgStr,smtpURLstr,smtpPortInt,smtpFromStr
     part1 = MIMEText(msgStr, 'plain')
     msg.attach(part1)
 
+    print(recipeintList)
     try:
         server = smtplib.SMTP_SSL(smtpURLstr, smtpPortInt)
         server.ehlo()
         server.login(MY_ADDRESS, PASSWORD)
-        server.sendmail(MY_ADDRESS, addressList, msg.as_string())
+        server.sendmail(MY_ADDRESS, recipeintList, msg.as_string())
         server.close()
         return 0
     except:
@@ -359,20 +362,41 @@ def loadOffsetValues(filename,indexTime):
     print("***************************************************************************************************")
     return offsetList
 
-def cullLogFile(filename,maxLines):
-    fileLines = []
-    with open(filename, "r") as filestream:
-        # print(len(filestream))
+# def cullLogFile(filename,maxLines):
+#     fileLines = []
+#     with open(filename, "r") as filestream:
+#         # print(len(filestream))
+#
+#         lineCount = 0
+#         for indx, line in enumerate(filestream):
+#             fileLines.append(line)
+#             lineCount = indx
+#
+#         print(lineCount)
+#
+#     if lineCount > maxLines:
+#         qtyToDelete = lineCount - maxLines
+#     else:
+#         return 0
+#
+#
+#     f = open(filename, "w+")
+#     f.close()
+#
+#     with open(filename, "a") as result_file:
+#         for indx, line in enumerate(fileLines):
+#             if indx >= qtyToDelete:
+#                 result_file.writelines(line)
+#
+#     return 1
 
-        lineCount = 0
-        for indx, line in enumerate(filestream):
-            fileLines.append(line)
-            lineCount = indx
+def cullLogFile(filename,maxSize):
+    # Size is in bytes (one character per byte)
+    char_list = [ch for ch in open(filename).read()]
+    fileSize = len(char_list)
 
-        print(lineCount)
-
-    if lineCount > maxLines:
-        qtyToDelete = lineCount - maxLines
+    if fileSize > maxSize:
+        qtyToDelete = fileSize - maxSize
     else:
         return 0
 
@@ -381,11 +405,22 @@ def cullLogFile(filename,maxLines):
     f.close()
 
     with open(filename, "a") as result_file:
-        for indx, line in enumerate(fileLines):
+        for indx, char in enumerate(char_list):
             if indx >= qtyToDelete:
-                result_file.writelines(line)
+                result_file.writelines(char)
 
     return 1
+
+def getFileSize(file):
+
+    statinfo = os.stat(file)
+    fileSize = statinfo.st_size
+
+    return fileSize
+
+# =====================================================================================================
+# Start of program
+# =====================================================================================================
 
 # In windows testing this will be different than in linux testing
 # Place this here so that this can be easily change when moved to a linux environment
@@ -397,6 +432,7 @@ elif opSystem == "Windows":
     fileSlash = "\\"
 else:
     print("Unkown OS")
+    sys.exit()
 
 debug = userPrompt("Debug Mode?","yn")
 
@@ -424,6 +460,7 @@ templateFile = "TBMconfig.ini"
 timeProgramStarted = time.time()
 tieValue1 = 0
 tieTimeStamp1 = 0
+logFileMaxSize = 50_000_000
 deviceList = []
 freqOffsetList = []
 duplicateTieList = []
@@ -436,18 +473,25 @@ deltaTimeLastSelftest = 0
 deltaTimeLastDailyMail = 0
 timeLastErrorEmail = 0
 commRetryInterval = 5
+dailyEmailAlreadySentList = []
 # tieValue24HR1 = 0
 # tieTimeStamp24HR1 = 0
 
 
-# Start Program ------------------------------------------------------
-create_log(logFile)
+# Create or append or cull the program log file ----------------------------------------------------------------
+create_log(logFile)                 # Create the program log file (if not exists already)
+print("Culling log file. This may take some time, depending on the size of the file...")
+tempResult = cullLogFile(logFile, logFileMaxSize)   # Reduce the size of the log file to value in bytes
 
 writeLog("\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/ New Program Instance \/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/",logFile)
 writeLog("Program Name: " + str(programName),logFile)
 writeLog("Program Version: " + str(version),logFile)
 writeLog("Current Working Directory: "+str(cwd),logFile)
 
+if tempResult == 1:
+    writeLog("Log file was culled at program start.", logFile)
+else:
+    writeLog("Log file was less than {} at program start.".format(logFileMaxSize), logFile)
 
 userInterfaceHeader(programName,version,cwd,logFile)
 
@@ -473,6 +517,7 @@ while searchComplete == False:
         deviceList.append(device)
         freqOffsetList.append([])
         duplicateTieList.append([])
+        dailyEmailAlreadySentList.append(False)
         pastTieValList.append(0)
         pastTimeValList.append(0)
     i += 1
@@ -493,15 +538,20 @@ for i in deviceList:
         print("Found a historical log file")
         listFromFile = loadOffsetValues(outputFile, indexTime)
         writeLog("Found the following historical offset values: {}".format(str(listFromFile)), logFile)
-        try:
-            for i in listFromFile:
-                freqOffsetList[deviceCounter].append(i)
-            writeLog("Saved historical offset values successfully", logFile)
-            writeLog("freqOffsetList: {}".format(freqOffsetList), logFile)
-            print("Saved historical offset values successfully")
-        except:
-            print("Failed to load historical offset values!")
-            writeLog("Failed to load historical offset values!", logFile)
+        tempLength = len(listFromFile)
+        if tempLength > 0:
+            try:
+                for i in listFromFile:
+                    freqOffsetList[deviceCounter].append(i)
+                writeLog("Saved historical offset values successfully", logFile)
+                writeLog("freqOffsetList: {}".format(freqOffsetList), logFile)
+                print("Saved historical offset values successfully")
+            except:
+                print("Failed to load historical offset values!")
+                writeLog("Failed to load historical offset values!", logFile)
+        else:
+            print("No historical offset values found within the 24 hour window.")
+            writeLog("No historical offset values found within the 24 hour window.", logFile)
 
     deviceCounter += 1
 
@@ -523,6 +573,11 @@ while monitor == True:
         currentDT = datetime.datetime.now()
         date_time = currentDT.strftime("%Y-%m-%d %H:%M:%S")
         print("Timestamp: {}".format(date_time))
+
+        # Cull log file if necessary ------------------------------------------
+        logFileSize = getFileSize(logFile)
+        if logFileSize >= 100_000_000:
+            cullLogFile(logFile, 50_000_000)
 
         # Load in device information and configuration information ------------
         # print(i)
@@ -585,6 +640,14 @@ while monitor == True:
         else:
             isMidnight = False
 
+        # Once the daily email is sent, dailyEmailAlreadySent is set to True, and the daily e-mail cannot be
+        # re-sent. If the variable flag is set to True, AND the hour is past 1 AM, then set the already sent
+        # flag back to false, so that an e-mail can be sent at the next midnight hour time segment
+        dailyEmailAlreadySent = dailyEmailAlreadySentList[deviceCounter]
+        if dailyEmailAlreadySent == True and timeHour > 1:
+            dailyEmailAlreadySent = False
+            dailyEmailAlreadySentList[deviceCounter] = dailyEmailAlreadySent
+
         # Set Send Daily E-mail and self-test Flag ----------------------------------------------------------
         if isMidnight == True:
             writeLog("isMidnight = True", logFile)
@@ -597,7 +660,7 @@ while monitor == True:
                 deltaTimeLastDailyMail = time.time()
                 writeLog("Set flags to run self-test and send daily e-mail notification", logFile)
                 writeLog("Performing operation to cull the length of the log file", logFile)
-                cullLogFile(logFile, 200_000)
+                cullLogFile(logFile, 100_000_000)
         else:
             writeLog("isMidnight = False", logFile)
             dailyEmail = False
@@ -644,7 +707,7 @@ while monitor == True:
         selfTestParam = ["ALL", "RAM", "ROM", "NONV", "GPS"]
         writeLog("performSelfTest: {}".format(str(performSelfTest)), logFile)
         selfTestRegister = []
-        if performSelfTest == True:
+        if performSelfTest == True and dailyEmailAlreadySent == False:
             string = "Selftest:"
             writeLog("Self-test initiated...", logFile)
             for i in selfTestParam:
@@ -663,7 +726,10 @@ while monitor == True:
                         selfTestFail = False
 
                     string += str(i) + ":" + str(serialRcvd) + "_"
-                    selfTestRegister.append(int(serialRcvd))
+                    try:
+                        selfTestRegister.append(int(serialRcvd))
+                    except:
+                        selfTestRegister.append(0)
                 else:
                     string = "ALL:0_RAM:0_ROM:0_NONV:0_GPS:0_"
                     selfTestRegister = [0,0,0,0,0]
@@ -838,8 +904,8 @@ while monitor == True:
         writeLog("length: {}".format(length), logFile)
         if length >= intervalPer24Hr or length >= 2:
             writeLog("==== Performing 24 Hour Average Calculation ====", logFile)
-            writeLog("freqOffsetList: {}".format(freqOffsetList),logFile)
-            writeLog("freqOffsetList for device {} is: {}".format(deviceCounter,freqOffsetList[deviceCounter]), logFile)
+            # writeLog("freqOffsetList: {}".format(freqOffsetList),logFile)
+            # writeLog("freqOffsetList for device {} is: {}".format(deviceCounter,freqOffsetList[deviceCounter]), logFile)
             list24hrVals = []
             for i in freqOffsetList[deviceCounter]:
                 list24hrVals.append(i)
@@ -934,28 +1000,35 @@ while monitor == True:
             print("Warning Email sent? (0 = yes): {}".format(test))
 
         if dailyEmail == True or debug == True:
-            msgStr = ""
-            if selfTestFail == True:
-                subjectStr = "AN {} GPS Timebase Self-Test Failure".format(assetNum)
-                msgStr += "During the daily self-test routine, the TBM program found a device which failed self-test.\n\n"
-            else:
-                subjectStr = "AN {} GPS Timebase Daily Status Update".format(assetNum)
-                msgStr += "Daily Status Update for Timebase Device AN {}.\n\n".format(assetNum)
+            dailyEmailAlreadySent = dailyEmailAlreadySentList[deviceCounter]
+            if dailyEmailAlreadySent == False:
+                msgStr = ""
+                if selfTestFail == True:
+                    subjectStr = "AN {} GPS Timebase Self-Test Failure".format(assetNum)
+                    msgStr += "During the daily self-test routine, the TBM program found a device which failed self-test.\n\n"
+                else:
+                    subjectStr = "AN {} GPS Timebase Daily Status Update".format(assetNum)
+                    msgStr += "Daily Status Update for Timebase Device AN {}.\n\n".format(assetNum)
 
-            msgStr += "Device *IDN? Response: {}\n".format(devIDN)
-            msgStr += "All Self-Test Result: {}\n".format(selfTestStringRegister[0])
-            msgStr += "RAM Self-Test Result: {}\n".format(selfTestStringRegister[1])
-            msgStr += "ROM Self-Test Result: {}\n".format(selfTestStringRegister[2])
-            msgStr += "Non-Volatile Memory Self-Test Result: {}\n".format(selfTestStringRegister[3])
-            msgStr += "GPS Receiver Self-Test Result: {}\n".format(selfTestStringRegister[4])
-            msgStr += "Specified Frequency Offset Error Limit: {}\n".format(diffLimit)
-            msgStr += "Most Recent Offset Error: {}\n".format(freqOffset)
-            msgStr += "24 Hour Average Offset Error: {}\n\n".format(freqOffset24HR)
-            msgStr += "{}, Version {}\n".format(programName, version)
+                msgStr += "Device *IDN? Response: {}\n".format(devIDN)
+                msgStr += "All Self-Test Result: {}\n".format(selfTestStringRegister[0])
+                msgStr += "RAM Self-Test Result: {}\n".format(selfTestStringRegister[1])
+                msgStr += "ROM Self-Test Result: {}\n".format(selfTestStringRegister[2])
+                msgStr += "Non-Volatile Memory Self-Test Result: {}\n".format(selfTestStringRegister[3])
+                msgStr += "GPS Receiver Self-Test Result: {}\n".format(selfTestStringRegister[4])
+                msgStr += "Specified Frequency Offset Error Limit: {}\n".format(diffLimit)
+                msgStr += "Most Recent Offset Error: {}\n".format(freqOffset)
+                msgStr += "24 Hour Average Offset Error: {}\n\n".format(freqOffset24HR)
+                msgStr += "{}, Version {}\n".format(programName, version)
 
-            test = sendEmail(emailList, subjectStr, msgStr, smtpUrl, smtpPort, smtpEmail, smtpPassword)
+                test = sendEmail(emailList, subjectStr, msgStr, smtpUrl, smtpPort, smtpEmail, smtpPassword)
 
-            print("Daily Email sent? (0 = yes): {}".format(test))
+                print("Daily Email sent? (0 = yes): {}".format(test))
+
+                dailyEmailAlreadySent = True
+                dailyEmailAlreadySentList[deviceCounter] = dailyEmailAlreadySent
+
+
 
             # Increment the device counter for the next instrument being monitored
             deviceCounter += 1
